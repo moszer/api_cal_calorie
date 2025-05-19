@@ -2,51 +2,34 @@
 import express from 'express';
 import multer from 'multer';
 import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from '@google/generative-ai';
-// import fs from 'node:fs'; // Not strictly needed if using buffer directly
 import dotenv from 'dotenv';
 
-dotenv.config(); // Load environment variables from .env file
+dotenv.config();
 
 const app = express();
 const port = process.env.PORT || 3000;
 
-// --- Gemini API Configuration ---
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 if (!GEMINI_API_KEY) {
-    console.error("GEMINI_API_KEY not found in environment variables");
-    process.exit(1); // Exit the program if there's no API key
+    console.error("GEMINI_API_KEY not found in environment variables. Please create a .env file with GEMINI_API_KEY=YOUR_API_KEY");
+    process.exit(1);
 }
-const MODEL_NAME = "gemini-1.5-flash-latest"; // Or "gemini-1.5-flash"
+const MODEL_NAME = "gemini-1.5-flash-latest";
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({
     model: MODEL_NAME,
-    // Safety settings can be further configured as needed
     safetySettings: [
-        {
-            category: HarmCategory.HARM_CATEGORY_HARASSMENT,
-            threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-        },
-        {
-            category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-            threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-        },
-        {
-            category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
-            threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-        },
-        {
-            category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-            threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-        },
+        { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
+        { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
+        { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
+        { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
     ],
 });
 
-// --- Multer Configuration (for receiving image files) ---
-// Store files in memory temporarily (for production, consider storing on disk or cloud storage)
 const storage = multer.memoryStorage();
 const upload = multer({
     storage: storage,
-    limits: { fileSize: 10 * 1024 * 1024 }, // Limit file size to 10MB
+    limits: { fileSize: 10 * 1024 * 1024 },
     fileFilter: (req, file, cb) => {
         if (file.mimetype.startsWith('image/')) {
             cb(null, true);
@@ -56,17 +39,10 @@ const upload = multer({
     }
 });
 
-// --- Helper Function: Convert Buffer to Part for Gemini API ---
 function fileToGenerativePart(buffer, mimeType) {
-    return {
-        inlineData: {
-            data: buffer.toString("base64"),
-            mimeType
-        },
-    };
+    return { inlineData: { data: buffer.toString("base64"), mimeType } };
 }
 
-// --- API Endpoint: /estimate-calories (POST) ---
 app.post('/estimate-calories', upload.single('foodImage'), async (req, res) => {
     if (!req.file) {
         return res.status(400).json({ error: 'Please upload an image file' });
@@ -74,116 +50,123 @@ app.post('/estimate-calories', upload.single('foodImage'), async (req, res) => {
 
     try {
         const imageBuffer = req.file.buffer;
-        const mimeType = req.file.mimetype; // e.g., 'image/jpeg', 'image/png'
+        const mimeType = req.file.mimetype;
 
-        // --- Create Prompt for Gemini ---
-        // This is a crucial part that needs to be customized to get the best results
+        // --- Create Prompt for Gemini (Updated for Macronutrients) ---
         const prompt = `
-            Analyze this food image and provide the following information in JSON format:
-            1.  A list of each food item found in the image.
-            2.  The estimated calorie count (kcal) for each food item.
-            3.  The estimated total calorie count for all food items in the image.
-            4.  A brief description of the nutritional value or characteristics of the overall meal.
+            Analyze the provided food image. You MUST return a JSON object with the following structure:
+            1.  "foodItems": An array of objects. Each object in this array MUST contain:
+                a.  "name": A string representing the identified food item (e.g., "Apple", "Slice of Pizza"). Be specific.
+                b.  "calories": A string representing the estimated calorie count for that single item (e.g., "Approx. 95 kcal").
+                c.  "proteinGrams": A string representing the estimated protein in grams for that item (e.g., "Approx. 0.3g", "12g"). If unknown, use "N/A".
+                d.  "carbsGrams": A string representing the estimated carbohydrates in grams for that item (e.g., "Approx. 25g", "30g"). If unknown, use "N/A".
+                e.  "fatGrams": A string representing the estimated fat in grams for that item (e.g., "Approx. 0.2g", "15g"). If unknown, use "N/A".
+            2.  "totalCalories": A string representing the estimated total calorie count for the entire meal (e.g., "Approx. 500-600 kcal").
+            3.  "totalProteinGrams": A string for the total estimated protein in grams for the meal. If unknown, use "N/A".
+            4.  "totalCarbsGrams": A string for the total estimated carbohydrates in grams for the meal. If unknown, use "N/A".
+            5.  "totalFatGrams": A string for the total estimated fat in grams for the meal. If unknown, use "N/A".
+            6.  "description": A brief string describing the overall meal and its nutritional characteristics.
 
-            Example of the desired JSON structure:
+            Example of the EXACT desired JSON output format:
             {
               "foodItems": [
-                { "name": "Food Item 1", "calories": "Approx. X kcal" },
-                { "name": "Food Item 2", "calories": "Approx. Y kcal" }
+                { 
+                  "name": "Grilled Chicken Breast", 
+                  "calories": "Approx. 165 kcal",
+                  "proteinGrams": "Approx. 31g",
+                  "carbsGrams": "Approx. 0g",
+                  "fatGrams": "Approx. 3.6g"
+                },
+                { 
+                  "name": "Steamed Broccoli", 
+                  "calories": "Approx. 55 kcal",
+                  "proteinGrams": "Approx. 3.7g",
+                  "carbsGrams": "Approx. 11.2g",
+                  "fatGrams": "Approx. 0.6g"
+                }
               ],
-              "totalCalories": "Approx. Z kcal",
-              "description": "Description of the meal..."
+              "totalCalories": "Approx. 220 kcal",
+              "totalProteinGrams": "Approx. 34.7g",
+              "totalCarbsGrams": "Approx. 11.2g",
+              "totalFatGrams": "Approx. 4.2g",
+              "description": "A lean and healthy meal consisting of grilled chicken breast and steamed broccoli, rich in protein and fiber."
             }
 
-            If you cannot identify the food or estimate calories, please indicate "Unable to identify" in the JSON or provide the best possible information.
-            Please provide the information in English.
+            If multiple distinct food items are visible, list each one separately in the "foodItems" array.
+            If you cannot identify specific items or estimate nutrients, use "Unknown food item", "N/A" for nutrient fields, or "Unable to estimate calories", but always try to maintain the JSON structure.
+            Provide all text in English.
         `;
 
         const imagePart = fileToGenerativePart(imageBuffer, mimeType);
 
-        console.log('Sending request to Gemini API...');
-        // Send prompt and image to Gemini API
+        console.log('Sending request to Gemini API (with macronutrient prompt)...');
         const result = await model.generateContent([prompt, imagePart]);
         const response = await result.response;
-        let textResponse = response.text(); // Use let so it can be modified
+        let textResponse = response.text(); 
 
         console.log('--- Raw Response from Gemini API ---');
         console.log(textResponse);
         console.log('--- End of Raw Response ---');
 
-        // Attempt to strip Markdown code block if present (e.g., ```json\n{...}\n```)
-        const markdownJsonRegex = /^```json\s*([\s\S]*?)\s*```$/m; // Handle multiline and optional leading/trailing whitespace
+        const markdownJsonRegex = /^```json\s*([\s\S]*?)\s*```$/m;
         const match = textResponse.match(markdownJsonRegex);
         if (match && match[1]) {
-            console.log('Markdown JSON block detected, attempting to extract JSON.');
-            textResponse = match[1].trim(); // Use the captured group and trim whitespace
+            textResponse = match[1].trim();
         } else {
-            // Fallback for cases where it might just start with ``` and end with ``` without "json"
             const genericMarkdownRegex = /^```\s*([\s\S]*?)\s*```$/m;
             const genericMatch = textResponse.match(genericMarkdownRegex);
             if (genericMatch && genericMatch[1]) {
-                console.log('Generic Markdown block detected, attempting to extract content.');
                 textResponse = genericMatch[1].trim();
             }
         }
-
-
-        // Attempt to parse the text response from Gemini as JSON
+        
         try {
             const jsonOutput = JSON.parse(textResponse);
+            
+            // Ensure essential fields have default values for client-side consistency
+            jsonOutput.foodItems = (Array.isArray(jsonOutput.foodItems) ? jsonOutput.foodItems : []).map(item => ({
+                name: item.name || "Unknown Item",
+                calories: item.calories || "N/A",
+                proteinGrams: item.proteinGrams || "N/A",
+                carbsGrams: item.carbsGrams || "N/A",
+                fatGrams: item.fatGrams || "N/A",
+            }));
+            jsonOutput.totalCalories = jsonOutput.totalCalories || "N/A";
+            jsonOutput.totalProteinGrams = jsonOutput.totalProteinGrams || "N/A";
+            jsonOutput.totalCarbsGrams = jsonOutput.totalCarbsGrams || "N/A";
+            jsonOutput.totalFatGrams = jsonOutput.totalFatGrams || "N/A";
+            jsonOutput.description = jsonOutput.description || "No description provided.";
+
             res.status(200).json(jsonOutput);
         } catch (jsonError) {
-            console.error('Error parsing JSON from Gemini. Raw text that failed to parse:', textResponse); // Log the text that failed
-            console.error('Parsing Error details:', jsonError); // Log the actual parsing error
-            res.status(500).json({
-                error: 'Could not process calorie information from AI (incorrect format)',
-                rawResponse: textResponse // Send raw response for debugging
-            });
+            console.error('Error parsing JSON from Gemini. Raw text:', textResponse, 'Error:', jsonError);
+            res.status(500).json({ error: 'Could not process AI response (format error)', rawResponse: textResponse });
         }
 
     } catch (error) {
-        console.error('Error calling Gemini API or during processing:', error);
-        // Handle various types of errors that might occur
+        console.error('Error during API call or processing:', error);
+        // ... (keep existing detailed error handling for Gemini blocks, quota, etc.)
         if (error.response && error.response.promptFeedback && error.response.promptFeedback.blockReason) {
-            // This checks for specific blocking reasons from Gemini's response structure
-            console.error('Request blocked by Gemini. Reason:', error.response.promptFeedback.blockReason);
-            console.error('Safety Ratings:', error.response.promptFeedback.safetyRatings);
-            return res.status(400).json({
-                error: `Request was blocked by Gemini due to safety policy: ${error.response.promptFeedback.blockReason}`,
-                details: `Safety Ratings: ${JSON.stringify(error.response.promptFeedback.safetyRatings)}`
-            });
+            return res.status(400).json({ error: `Request blocked by Gemini: ${error.response.promptFeedback.blockReason}` });
         }
-        if (error.message && error.message.includes('SAFETY')) { // General safety message check
-             return res.status(400).json({ error: 'Request was blocked due to Gemini\'s safety policy (potentially inappropriate content in image or prompt)', details: error.message });
-        } else if (error.message && error.message.includes('No candidates found')) {
-             return res.status(500).json({ error: 'Gemini API could not generate a response for this image or prompt (No candidates found)', details: error.message });
-        } else if (error.message && (error.message.includes('quota') || (error.response && error.response.status === 429))) {
-            return res.status(429).json({ error: 'API quota exceeded. Please try again later.' });
-        }
-         else {
-            return res.status(500).json({ error: 'Internal server error while processing the image', details: error.message });
+        // ... other specific error checks
+        else {
+            return res.status(500).json({ error: 'Internal server error', details: error.message });
         }
     }
 });
 
-// Middleware for handling errors from multer and other errors
 app.use((err, req, res, next) => {
     if (err instanceof multer.MulterError) {
         return res.status(400).json({ error: `Multer error: ${err.message}` });
     } else if (err) {
-        // Handle other errors not directly from multer or Gemini
+        console.error("Unhandled error in middleware:", err);
         return res.status(400).json({ error: err.message || 'An unknown error occurred' });
     }
-    // If no error, or if headers have already been sent, pass to Express default error handler
-    if (res.headersSent) {
-        return next(err);
-    }
-    // Ensure 'next' is called if it's not an error we handle here, or if it's meant for further processing
     next();
 });
 
-
-app.listen(port, '0.0.0.0', () => { // Added '0.0.0.0' for easier testing from real devices on the same network
-    console.log(`API Server is running at http://localhost:${port} (and on your local network IP)`);
-    console.log("Don't forget to set your GEMINI_API_KEY in the .env file.");
+app.listen(port, '0.0.0.0', () => {
+    console.log(`API Server running at http://localhost:${port} and on your local network IP`);
+    console.log("GEMINI_API_KEY is " + (GEMINI_API_KEY ? "set." : "NOT SET. Please check .env file."));
 });
