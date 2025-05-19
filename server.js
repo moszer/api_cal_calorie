@@ -2,7 +2,7 @@
 import express from 'express';
 import multer from 'multer';
 import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from '@google/generative-ai';
-// import fs from 'node:fs'; // Not strictly needed if using buffer directly, but can be kept if future use cases require it.
+// import fs from 'node:fs'; // Not strictly needed if using buffer directly
 import dotenv from 'dotenv';
 
 dotenv.config(); // Load environment variables from .env file
@@ -105,17 +105,36 @@ app.post('/estimate-calories', upload.single('foodImage'), async (req, res) => {
         // Send prompt and image to Gemini API
         const result = await model.generateContent([prompt, imagePart]);
         const response = await result.response;
-        const textResponse = response.text();
+        let textResponse = response.text(); // Use let so it can be modified
 
-        console.log('Received response from Gemini API:', textResponse);
+        console.log('--- Raw Response from Gemini API ---');
+        console.log(textResponse);
+        console.log('--- End of Raw Response ---');
+
+        // Attempt to strip Markdown code block if present (e.g., ```json\n{...}\n```)
+        const markdownJsonRegex = /^```json\s*([\s\S]*?)\s*```$/m; // Handle multiline and optional leading/trailing whitespace
+        const match = textResponse.match(markdownJsonRegex);
+        if (match && match[1]) {
+            console.log('Markdown JSON block detected, attempting to extract JSON.');
+            textResponse = match[1].trim(); // Use the captured group and trim whitespace
+        } else {
+            // Fallback for cases where it might just start with ``` and end with ``` without "json"
+            const genericMarkdownRegex = /^```\s*([\s\S]*?)\s*```$/m;
+            const genericMatch = textResponse.match(genericMarkdownRegex);
+            if (genericMatch && genericMatch[1]) {
+                console.log('Generic Markdown block detected, attempting to extract content.');
+                textResponse = genericMatch[1].trim();
+            }
+        }
+
 
         // Attempt to parse the text response from Gemini as JSON
         try {
             const jsonOutput = JSON.parse(textResponse);
             res.status(200).json(jsonOutput);
         } catch (jsonError) {
-            console.error('Error parsing JSON from Gemini:', jsonError);
-            // If JSON parsing fails, might send raw text back or a meaningful error message
+            console.error('Error parsing JSON from Gemini. Raw text that failed to parse:', textResponse); // Log the text that failed
+            console.error('Parsing Error details:', jsonError); // Log the actual parsing error
             res.status(500).json({
                 error: 'Could not process calorie information from AI (incorrect format)',
                 rawResponse: textResponse // Send raw response for debugging
@@ -123,17 +142,26 @@ app.post('/estimate-calories', upload.single('foodImage'), async (req, res) => {
         }
 
     } catch (error) {
-        console.error('Error calling Gemini API:', error);
+        console.error('Error calling Gemini API or during processing:', error);
         // Handle various types of errors that might occur
-        if (error.message && error.message.includes('SAFETY')) {
-             res.status(400).json({ error: 'Request was blocked due to Gemini\'s safety policy (potentially inappropriate content in image or prompt)', details: error.message });
-        } else if (error.message && error.message.includes('candidates found.') && !error.message.includes('No candidates found.')) { // Specific check for "0 candidates found"
-             res.status(500).json({ error: 'Gemini API could not generate a response for this image or prompt (No candidates found)', details: error.message });
-        } else if (error.message && (error.message.includes('quota') || (error.response && error.response.status === 429))) { // Check error.response for status code too
-            res.status(429).json({ error: 'API quota exceeded. Please try again later.' });
+        if (error.response && error.response.promptFeedback && error.response.promptFeedback.blockReason) {
+            // This checks for specific blocking reasons from Gemini's response structure
+            console.error('Request blocked by Gemini. Reason:', error.response.promptFeedback.blockReason);
+            console.error('Safety Ratings:', error.response.promptFeedback.safetyRatings);
+            return res.status(400).json({
+                error: `Request was blocked by Gemini due to safety policy: ${error.response.promptFeedback.blockReason}`,
+                details: `Safety Ratings: ${JSON.stringify(error.response.promptFeedback.safetyRatings)}`
+            });
+        }
+        if (error.message && error.message.includes('SAFETY')) { // General safety message check
+             return res.status(400).json({ error: 'Request was blocked due to Gemini\'s safety policy (potentially inappropriate content in image or prompt)', details: error.message });
+        } else if (error.message && error.message.includes('No candidates found')) {
+             return res.status(500).json({ error: 'Gemini API could not generate a response for this image or prompt (No candidates found)', details: error.message });
+        } else if (error.message && (error.message.includes('quota') || (error.response && error.response.status === 429))) {
+            return res.status(429).json({ error: 'API quota exceeded. Please try again later.' });
         }
          else {
-            res.status(500).json({ error: 'Internal server error while processing the image', details: error.message });
+            return res.status(500).json({ error: 'Internal server error while processing the image', details: error.message });
         }
     }
 });
@@ -146,11 +174,16 @@ app.use((err, req, res, next) => {
         // Handle other errors not directly from multer or Gemini
         return res.status(400).json({ error: err.message || 'An unknown error occurred' });
     }
-    next(); // If no error, proceed to the next middleware or route handler
+    // If no error, or if headers have already been sent, pass to Express default error handler
+    if (res.headersSent) {
+        return next(err);
+    }
+    // Ensure 'next' is called if it's not an error we handle here, or if it's meant for further processing
+    next();
 });
 
 
-app.listen(port, () => {
-    console.log(`API Server is running at http://localhost:${port}`);
+app.listen(port, '0.0.0.0', () => { // Added '0.0.0.0' for easier testing from real devices on the same network
+    console.log(`API Server is running at http://localhost:${port} (and on your local network IP)`);
     console.log("Don't forget to set your GEMINI_API_KEY in the .env file.");
 });
